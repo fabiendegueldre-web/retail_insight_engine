@@ -19,7 +19,7 @@ uploaded_file = st.file_uploader(
 
 
 # -----------------------------
-# File loading
+# Helpers
 # -----------------------------
 
 def load_file(file):
@@ -92,8 +92,14 @@ def safe_growth(current, previous):
 
 
 def normalise_score(series):
+    series = pd.to_numeric(series, errors="coerce").fillna(0)
+
+    if len(series) == 0:
+        return series
+
     if series.max() == series.min():
         return pd.Series([50] * len(series), index=series.index)
+
     return ((series - series.min()) / (series.max() - series.min())) * 100
 
 
@@ -117,6 +123,25 @@ def action_priority(score):
     return "🔴 Low Priority"
 
 
+def find_likely_sales_measure(measures):
+    keywords = [
+        "sales",
+        "sell out",
+        "sell-out",
+        "revenue",
+        "usd",
+        "value",
+        "amount"
+    ]
+
+    for measure in measures:
+        clean = str(measure).lower()
+        if any(keyword in clean for keyword in keywords):
+            return measure
+
+    return measures[0] if measures else None
+
+
 # -----------------------------
 # Main app
 # -----------------------------
@@ -137,90 +162,205 @@ if uploaded_file:
     st.write(f"Rows: {df.shape[0]:,} | Columns: {df.shape[1]:,}")
     st.dataframe(df.head(20), use_container_width=True)
 
-    # Auto-detect your typical fields
-    country_col = detect_column(df, ["Country Name", "Country"])
+    # -----------------------------
+    # Field mapping
+    # -----------------------------
+
+    account_class_col = detect_column(df, ["GCO Account Classification", "Account Classification"])
     account_col = detect_column(df, ["Account Name", "Account", "Retailer", "Customer"])
+
+    product_bg_col = detect_column(df, ["Product BG", "Business Group"])
     product_group_col = detect_column(df, ["Product Group Desc", "Product Group"])
     product_type_col = detect_column(df, ["Product Type Desc", "Product Type"])
-    product_line_col = detect_column(df, ["Product Line Desc", "Product Line"])
+    product_marketing_col = detect_column(df, ["Product Marketing Name", "Marketing Product Description", "Product Name"])
+    bups_col = detect_column(df, ["Bups Project Name", "Project Name"])
+    product_segment_col = detect_column(df, ["Product Segment", "Segment"])
     sku_col = detect_column(df, ["Product Sku", "SKU"])
-    product_desc_col = detect_column(df, ["Marketing Product Description", "Product Description"])
+
     fiscal_year_col = detect_column(df, ["Fiscal Year", "Year"])
     fiscal_quarter_col = detect_column(df, ["Fiscal Quarter Alias", "Fiscal Quarter"])
-    fiscal_month_col = detect_column(df, ["Fiscal Month Alias", "Fiscal Month"])
-    sales_col = detect_column(df, ["Indirect Sales Out USD", "Sales Out", "Revenue", "Sales"])
+    fiscal_week_col = detect_column(df, ["Fiscal Week", "Week"])
+
+    measure_names_col = detect_column(df, ["Measure Names", "Measure Name", "Metric"])
+    measure_values_col = detect_column(df, ["Measure Values", "Measure Value", "Value"])
 
     st.subheader("2. Vendor field mapping")
 
     cols = list(df.columns)
+    empty_options = [None] + cols
 
-    country_col = st.selectbox("Country column", [None] + cols, index=([None] + cols).index(country_col) if country_col in cols else 0)
-    account_col = st.selectbox("Account / retailer column", [None] + cols, index=([None] + cols).index(account_col) if account_col in cols else 0)
-    product_group_col = st.selectbox("Product group column", [None] + cols, index=([None] + cols).index(product_group_col) if product_group_col in cols else 0)
-    product_type_col = st.selectbox("Product type column", [None] + cols, index=([None] + cols).index(product_type_col) if product_type_col in cols else 0)
-    product_line_col = st.selectbox("Product line column", [None] + cols, index=([None] + cols).index(product_line_col) if product_line_col in cols else 0)
-    sku_col = st.selectbox("Product SKU column", [None] + cols, index=([None] + cols).index(sku_col) if sku_col in cols else 0)
-    product_desc_col = st.selectbox("Marketing product description column", [None] + cols, index=([None] + cols).index(product_desc_col) if product_desc_col in cols else 0)
-    fiscal_year_col = st.selectbox("Fiscal year column", [None] + cols, index=([None] + cols).index(fiscal_year_col) if fiscal_year_col in cols else 0)
-    fiscal_quarter_col = st.selectbox("Fiscal quarter column", [None] + cols, index=([None] + cols).index(fiscal_quarter_col) if fiscal_quarter_col in cols else 0)
-    fiscal_month_col = st.selectbox("Fiscal month column", [None] + cols, index=([None] + cols).index(fiscal_month_col) if fiscal_month_col in cols else 0)
-    sales_col = st.selectbox("Indirect sales out USD column", cols, index=cols.index(sales_col) if sales_col in cols else 0)
+    account_class_col = st.selectbox(
+        "Account classification column",
+        empty_options,
+        index=empty_options.index(account_class_col) if account_class_col in empty_options else 0
+    )
 
-    if not sku_col or not account_col or not fiscal_year_col or not fiscal_month_col:
-        st.warning("For best results, map Account, SKU, Fiscal Year and Fiscal Month.")
+    account_col = st.selectbox(
+        "Account / retailer column",
+        empty_options,
+        index=empty_options.index(account_col) if account_col in empty_options else 0
+    )
+
+    product_bg_col = st.selectbox(
+        "Product BG column",
+        empty_options,
+        index=empty_options.index(product_bg_col) if product_bg_col in empty_options else 0
+    )
+
+    product_group_col = st.selectbox(
+        "Product group column",
+        empty_options,
+        index=empty_options.index(product_group_col) if product_group_col in empty_options else 0
+    )
+
+    product_type_col = st.selectbox(
+        "Product type column",
+        empty_options,
+        index=empty_options.index(product_type_col) if product_type_col in empty_options else 0
+    )
+
+    product_segment_col = st.selectbox(
+        "Product segment column",
+        empty_options,
+        index=empty_options.index(product_segment_col) if product_segment_col in empty_options else 0
+    )
+
+    product_marketing_col = st.selectbox(
+        "Product marketing name column",
+        empty_options,
+        index=empty_options.index(product_marketing_col) if product_marketing_col in empty_options else 0
+    )
+
+    bups_col = st.selectbox(
+        "Bups project name column",
+        empty_options,
+        index=empty_options.index(bups_col) if bups_col in empty_options else 0
+    )
+
+    sku_col = st.selectbox(
+        "Product SKU column",
+        empty_options,
+        index=empty_options.index(sku_col) if sku_col in empty_options else 0
+    )
+
+    fiscal_year_col = st.selectbox(
+        "Fiscal year column",
+        empty_options,
+        index=empty_options.index(fiscal_year_col) if fiscal_year_col in empty_options else 0
+    )
+
+    fiscal_quarter_col = st.selectbox(
+        "Fiscal quarter column",
+        empty_options,
+        index=empty_options.index(fiscal_quarter_col) if fiscal_quarter_col in empty_options else 0
+    )
+
+    fiscal_week_col = st.selectbox(
+        "Fiscal week column",
+        empty_options,
+        index=empty_options.index(fiscal_week_col) if fiscal_week_col in empty_options else 0
+    )
+
+    measure_names_col = st.selectbox(
+        "Measure names column",
+        empty_options,
+        index=empty_options.index(measure_names_col) if measure_names_col in empty_options else 0
+    )
+
+    measure_values_col = st.selectbox(
+        "Measure values column",
+        empty_options,
+        index=empty_options.index(measure_values_col) if measure_values_col in empty_options else 0
+    )
+
+    required_fields = {
+        "Account": account_col,
+        "Product SKU": sku_col,
+        "Fiscal Year": fiscal_year_col,
+        "Fiscal Week": fiscal_week_col,
+        "Measure Names": measure_names_col,
+        "Measure Values": measure_values_col
+    }
+
+    missing_required = [name for name, value in required_fields.items() if not value]
+
+    if missing_required:
+        st.warning("Please map the following required fields: " + ", ".join(missing_required))
         st.stop()
 
-    df[sales_col] = clean_number(df[sales_col])
-    df = df.dropna(subset=[sales_col])
+    available_measures = sorted(df[measure_names_col].dropna().astype(str).unique().tolist())
+    likely_sales_measure = find_likely_sales_measure(available_measures)
 
-    df["_Period"] = (
-        df[fiscal_year_col].astype(str)
-        + " - "
-        + df[fiscal_month_col].astype(str)
+    st.subheader("3. Select sales measure")
+
+    sales_measure = st.selectbox(
+        "Which measure should be used as sell-out sales value?",
+        available_measures,
+        index=available_measures.index(likely_sales_measure) if likely_sales_measure in available_measures else 0
     )
 
-    product_name_col = product_desc_col if product_desc_col else sku_col
-    category_col = product_line_col if product_line_col else product_type_col if product_type_col else product_group_col
+    sales_df = df[df[measure_names_col].astype(str) == str(sales_measure)].copy()
 
-    # Create ordered period index
-    period_table = (
-        df[[fiscal_year_col, fiscal_month_col, "_Period"]]
+    sales_df["_Sales"] = clean_number(sales_df[measure_values_col])
+    sales_df = sales_df.dropna(subset=["_Sales"])
+
+    if sales_df.empty:
+        st.error("No usable rows found for the selected sales measure.")
+        st.stop()
+
+    sales_df["_YearNum"] = pd.to_numeric(sales_df[fiscal_year_col], errors="coerce")
+    sales_df["_WeekNum"] = pd.to_numeric(sales_df[fiscal_week_col], errors="coerce")
+
+    sales_df = sales_df.dropna(subset=["_YearNum", "_WeekNum"])
+
+    sales_df["_YearNum"] = sales_df["_YearNum"].astype(int)
+    sales_df["_WeekNum"] = sales_df["_WeekNum"].astype(int)
+
+    sales_df["_Period"] = (
+        "FY"
+        + sales_df["_YearNum"].astype(str)
+        + " W"
+        + sales_df["_WeekNum"].astype(str).str.zfill(2)
+    )
+
+    sales_df["_PeriodSort"] = sales_df["_YearNum"] * 100 + sales_df["_WeekNum"]
+
+    ordered_periods = (
+        sales_df[["_Period", "_PeriodSort"]]
         .drop_duplicates()
-        .reset_index(drop=True)
+        .sort_values("_PeriodSort")["_Period"]
+        .tolist()
     )
-
-    period_table["_YearNum"] = pd.to_numeric(period_table[fiscal_year_col], errors="coerce")
-    period_table["_MonthNum"] = pd.to_numeric(period_table[fiscal_month_col], errors="coerce")
-    period_table = period_table.sort_values(["_YearNum", "_MonthNum"])
-
-    ordered_periods = period_table["_Period"].tolist()
 
     if len(ordered_periods) < 2:
-        st.warning("The file needs at least two fiscal months to calculate momentum and recommendations.")
+        st.warning("The file needs at least two fiscal weeks to calculate momentum and recommendations.")
         st.stop()
 
     latest_period = ordered_periods[-1]
     previous_period = ordered_periods[-2]
 
-    latest_df = df[df["_Period"] == latest_period]
-    previous_df = df[df["_Period"] == previous_period]
+    latest_df = sales_df[sales_df["_Period"] == latest_period]
+    previous_df = sales_df[sales_df["_Period"] == previous_period]
+
+    product_name_col = product_marketing_col if product_marketing_col else sku_col
+    category_col = product_segment_col if product_segment_col else product_type_col if product_type_col else product_group_col
 
     # -----------------------------
-    # Product scoring engine
+    # Product Scoring Engine
     # -----------------------------
 
     product_latest = (
-        latest_df.groupby([sku_col, product_name_col], dropna=False)[sales_col]
+        latest_df.groupby([sku_col, product_name_col], dropna=False)["_Sales"]
         .sum()
         .reset_index()
-        .rename(columns={sales_col: "Latest Sales"})
+        .rename(columns={"_Sales": "Latest Sales"})
     )
 
     product_previous = (
-        previous_df.groupby([sku_col], dropna=False)[sales_col]
+        previous_df.groupby(sku_col, dropna=False)["_Sales"]
         .sum()
         .reset_index()
-        .rename(columns={sales_col: "Previous Sales"})
+        .rename(columns={"_Sales": "Previous Sales"})
     )
 
     product_accounts = (
@@ -232,7 +372,9 @@ if uploaded_file:
 
     product_scores = product_latest.merge(product_previous, on=sku_col, how="left")
     product_scores = product_scores.merge(product_accounts, on=sku_col, how="left")
+
     product_scores["Previous Sales"] = product_scores["Previous Sales"].fillna(0)
+
     product_scores["Growth %"] = product_scores.apply(
         lambda x: safe_growth(x["Latest Sales"], x["Previous Sales"]),
         axis=1
@@ -256,21 +398,21 @@ if uploaded_file:
     product_scores = product_scores.sort_values("Product Score", ascending=False)
 
     # -----------------------------
-    # Account scorecards
+    # Account Scorecards
     # -----------------------------
 
     account_latest = (
-        latest_df.groupby(account_col)[sales_col]
+        latest_df.groupby(account_col)["_Sales"]
         .sum()
         .reset_index()
-        .rename(columns={sales_col: "Latest Sales"})
+        .rename(columns={"_Sales": "Latest Sales"})
     )
 
     account_previous = (
-        previous_df.groupby(account_col)[sales_col]
+        previous_df.groupby(account_col)["_Sales"]
         .sum()
         .reset_index()
-        .rename(columns={sales_col: "Previous Sales"})
+        .rename(columns={"_Sales": "Previous Sales"})
     )
 
     account_skus = (
@@ -282,7 +424,9 @@ if uploaded_file:
 
     account_scorecards = account_latest.merge(account_previous, on=account_col, how="left")
     account_scorecards = account_scorecards.merge(account_skus, on=account_col, how="left")
+
     account_scorecards["Previous Sales"] = account_scorecards["Previous Sales"].fillna(0)
+
     account_scorecards["Growth %"] = account_scorecards.apply(
         lambda x: safe_growth(x["Latest Sales"], x["Previous Sales"]),
         axis=1
@@ -301,14 +445,14 @@ if uploaded_file:
     account_scorecards = account_scorecards.sort_values("Account Health Score", ascending=False)
 
     # -----------------------------
-    # Opportunity engine
+    # Opportunity Engine
     # -----------------------------
 
     account_product_latest = (
-        latest_df.groupby([account_col, sku_col, product_name_col], dropna=False)[sales_col]
+        latest_df.groupby([account_col, sku_col, product_name_col], dropna=False)["_Sales"]
         .sum()
         .reset_index()
-        .rename(columns={sales_col: "Account Product Sales"})
+        .rename(columns={"_Sales": "Account Product Sales"})
     )
 
     product_average = (
@@ -325,8 +469,10 @@ if uploaded_file:
         how="left"
     )
 
-    opportunities["Gap To Average"] = opportunities["Average Account Sales"] - opportunities["Account Product Sales"]
-    opportunities["Gap To Average"] = opportunities["Gap To Average"].clip(lower=0)
+    opportunities["Gap To Average"] = (
+        opportunities["Average Account Sales"]
+        - opportunities["Account Product Sales"]
+    ).clip(lower=0)
 
     opportunities["Opportunity Score"] = (
         normalise_score(opportunities["Gap To Average"]) * 0.45
@@ -339,7 +485,7 @@ if uploaded_file:
     opportunities["Recommended Action"] = opportunities.apply(
         lambda x: (
             f"Increase promotional support for {x[product_name_col]} in {x[account_col]}. "
-            f"This product under-indexes versus the account average and has a product score of {x['Product Score']:.0f}."
+            f"This product is below the average account sales level and has a product score of {x['Product Score']:.0f}."
         ),
         axis=1
     )
@@ -347,7 +493,7 @@ if uploaded_file:
     opportunities = opportunities.sort_values("Opportunity Score", ascending=False)
 
     # -----------------------------
-    # Tabs
+    # Dashboard
     # -----------------------------
 
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -359,10 +505,11 @@ if uploaded_file:
 
     with tab1:
         st.subheader("🔥 Commercial Action Centre")
+        st.caption(f"Sales measure: {sales_measure}")
         st.caption(f"Latest period: {latest_period} | Previous period: {previous_period}")
 
-        total_sales = latest_df[sales_col].sum()
-        previous_sales = previous_df[sales_col].sum()
+        total_sales = latest_df["_Sales"].sum()
+        previous_sales = previous_df["_Sales"].sum()
         total_growth = safe_growth(total_sales, previous_sales)
 
         k1, k2, k3, k4 = st.columns(4)
@@ -399,7 +546,7 @@ if uploaded_file:
 
         st.info(
             f"""
-            Latest sell-out was **${total_sales:,.0f}**, with growth of **{total_growth:.1f}%** versus the previous period.
+            Latest sell-out was **${total_sales:,.0f}**, with growth of **{total_growth:.1f}%** versus the previous fiscal week.
 
             The strongest account is **{top_account}**.
 
@@ -409,6 +556,21 @@ if uploaded_file:
             with an estimated gap to average of **${top_opp['Gap To Average']:,.0f}**.
             """
         )
+
+        trend = (
+            sales_df.groupby(["_Period", "_PeriodSort"])["_Sales"]
+            .sum()
+            .reset_index()
+            .sort_values("_PeriodSort")
+        )
+
+        fig = px.line(
+            trend,
+            x="_Period",
+            y="_Sales",
+            title="Sell-out sales trend by fiscal week"
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
         st.subheader("Product Scoring Engine")
@@ -502,7 +664,7 @@ if uploaded_file:
             st.markdown("### Account/category benchmark")
 
             benchmark = (
-                latest_df.groupby([account_col, category_col])[sales_col]
+                latest_df.groupby([account_col, category_col])["_Sales"]
                 .sum()
                 .reset_index()
             )
@@ -511,7 +673,7 @@ if uploaded_file:
                 benchmark,
                 x=category_col,
                 y=account_col,
-                z=sales_col,
+                z="_Sales",
                 title="Account/category sales heatmap"
             )
             st.plotly_chart(fig, use_container_width=True)
