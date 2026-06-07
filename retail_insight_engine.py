@@ -2,22 +2,25 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-from sklearn.linear_model import LinearRegression
 
 st.set_page_config(
-    page_title="Retail Insight Engine",
+    page_title="Vendor Growth Opportunity Engine",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 Retail Insight Engine")
-st.caption("Upload sales data and generate charts, forecasts, benchmarks and commercial recommendations.")
+st.title("📊 Vendor Growth Opportunity Engine")
+st.caption("Upload vendor sell-out data and generate product scores, account scorecards and commercial recommendations.")
 
 uploaded_file = st.file_uploader(
-    "Upload your retail sales file",
+    "Upload your vendor sell-out file",
     type=["csv", "xlsx", "xls"]
 )
 
+
+# -----------------------------
+# File loading
+# -----------------------------
 
 def load_file(file):
     if file.name.endswith((".xlsx", ".xls")):
@@ -33,7 +36,6 @@ def load_file(file):
         for sep in separators:
             try:
                 file.seek(0)
-
                 temp_df = pd.read_csv(
                     file,
                     encoding=encoding,
@@ -55,102 +57,72 @@ def load_file(file):
                 continue
 
     if best_df is None or best_df.empty:
-        raise ValueError("Could not read the uploaded file. Please check the file format.")
+        raise ValueError("Could not read uploaded file.")
 
     return best_df
 
 
-def detect_column(df, keywords):
+def detect_column(df, possible_names):
     for col in df.columns:
-        clean_col = str(col).lower().replace("_", " ").replace("-", " ")
-        if any(k in clean_col for k in keywords):
-            return col
+        clean_col = str(col).lower().strip()
+        for name in possible_names:
+            if name.lower() in clean_col:
+                return col
     return None
 
 
-def clean_currency(series):
+def clean_number(series):
     return (
         series.astype(str)
-        .str.replace("£", "", regex=False)
         .str.replace("$", "", regex=False)
+        .str.replace("£", "", regex=False)
         .str.replace("€", "", regex=False)
         .str.replace(",", "", regex=False)
-        .str.replace("%", "", regex=False)
+        .str.replace(" ", "", regex=False)
         .replace("nan", np.nan)
         .replace("", np.nan)
         .astype(float)
     )
 
 
-def generate_insights(df, date_col, sales_col, product_col, category_col, store_col, units_col, margin_col):
-    insights = []
-
-    total_sales = df[sales_col].sum()
-    insights.append(f"Total sales were {total_sales:,.0f}.")
-
-    if date_col:
-        monthly = df.groupby(pd.Grouper(key=date_col, freq="M"))[sales_col].sum().dropna()
-        if len(monthly) >= 2 and monthly.iloc[-2] != 0:
-            change = ((monthly.iloc[-1] - monthly.iloc[-2]) / monthly.iloc[-2]) * 100
-            direction = "increased" if change >= 0 else "declined"
-            insights.append(f"Sales {direction} by {abs(change):.1f}% versus the previous month.")
-
-    if category_col:
-        top_cat = df.groupby(category_col)[sales_col].sum().sort_values(ascending=False).head(1)
-        if not top_cat.empty:
-            insights.append(f"The strongest category was {top_cat.index[0]}, generating {top_cat.iloc[0]:,.0f} in sales.")
-
-    if product_col:
-        top_product = df.groupby(product_col)[sales_col].sum().sort_values(ascending=False).head(1)
-        if not top_product.empty:
-            insights.append(f"The top product was {top_product.index[0]}, generating {top_product.iloc[0]:,.0f} in sales.")
-
-    if store_col:
-        store_perf = df.groupby(store_col)[sales_col].sum().sort_values()
-        if not store_perf.empty:
-            insights.append(f"The lowest-performing store was {store_perf.index[0]}, with {store_perf.iloc[0]:,.0f} in sales.")
-            insights.append(f"The best-performing store was {store_perf.index[-1]}, with {store_perf.iloc[-1]:,.0f} in sales.")
-
-    if margin_col:
-        avg_margin = df[margin_col].mean()
-        insights.append(f"Average margin was {avg_margin:.1f}%.")
-
-    return insights
+def safe_growth(current, previous):
+    if previous == 0 or pd.isna(previous):
+        return np.nan
+    return ((current - previous) / previous) * 100
 
 
-def create_forecast(df, date_col, sales_col):
-    daily = df.groupby(date_col)[sales_col].sum().reset_index()
-    daily = daily.sort_values(date_col)
-    daily = daily.dropna()
+def normalise_score(series):
+    if series.max() == series.min():
+        return pd.Series([50] * len(series), index=series.index)
+    return ((series - series.min()) / (series.max() - series.min())) * 100
 
-    daily["day_number"] = np.arange(len(daily))
 
-    X = daily[["day_number"]]
-    y = daily[sales_col]
+def product_status(score, growth):
+    if score >= 85 and growth >= 0:
+        return "Strategic Hero"
+    if score >= 70 and growth >= 0:
+        return "Growth Driver"
+    if score >= 55:
+        return "Opportunity"
+    if growth < -15:
+        return "At Risk"
+    return "Declining / Low Priority"
 
-    model = LinearRegression()
-    model.fit(X, y)
 
-    future_days = 30
+def action_priority(score):
+    if score >= 75:
+        return "🔥 Immediate Action"
+    if score >= 50:
+        return "🟡 Monitor"
+    return "🔴 Low Priority"
 
-    future = pd.DataFrame({
-        "day_number": np.arange(len(daily), len(daily) + future_days)
-    })
 
-    last_date = daily[date_col].max()
-
-    future[date_col] = pd.date_range(
-        start=last_date + pd.Timedelta(days=1),
-        periods=future_days
-    )
-
-    future[sales_col] = model.predict(future[["day_number"]])
-    future[sales_col] = future[sales_col].clip(lower=0)
-
-    return daily, future
-
+# -----------------------------
+# Main app
+# -----------------------------
 
 if uploaded_file:
+
     try:
         df = load_file(uploaded_file)
         df.columns = df.columns.astype(str).str.strip()
@@ -165,276 +137,395 @@ if uploaded_file:
     st.write(f"Rows: {df.shape[0]:,} | Columns: {df.shape[1]:,}")
     st.dataframe(df.head(20), use_container_width=True)
 
-    date_col = detect_column(df, ["date", "week", "month", "day"])
-    sales_col = detect_column(df, ["sales", "revenue", "turnover", "amount", "value", "net"])
-    product_col = detect_column(df, ["product", "sku", "item", "model"])
-    category_col = detect_column(df, ["category", "department", "range", "segment"])
-    store_col = detect_column(df, ["store", "location", "branch", "retailer", "customer"])
-    units_col = detect_column(df, ["units", "quantity", "qty", "volume"])
-    margin_col = detect_column(df, ["margin", "gm", "profit"])
+    # Auto-detect your typical fields
+    country_col = detect_column(df, ["Country Name", "Country"])
+    account_col = detect_column(df, ["Account Name", "Account", "Retailer", "Customer"])
+    product_group_col = detect_column(df, ["Product Group Desc", "Product Group"])
+    product_type_col = detect_column(df, ["Product Type Desc", "Product Type"])
+    product_line_col = detect_column(df, ["Product Line Desc", "Product Line"])
+    sku_col = detect_column(df, ["Product Sku", "SKU"])
+    product_desc_col = detect_column(df, ["Marketing Product Description", "Product Description"])
+    fiscal_year_col = detect_column(df, ["Fiscal Year", "Year"])
+    fiscal_quarter_col = detect_column(df, ["Fiscal Quarter Alias", "Fiscal Quarter"])
+    fiscal_month_col = detect_column(df, ["Fiscal Month Alias", "Fiscal Month"])
+    sales_col = detect_column(df, ["Indirect Sales Out USD", "Sales Out", "Revenue", "Sales"])
 
-    st.subheader("2. Column mapping")
+    st.subheader("2. Vendor field mapping")
 
     cols = list(df.columns)
-    empty_options = [None] + cols
 
-    date_col = st.selectbox(
-        "Date column",
-        empty_options,
-        index=empty_options.index(date_col) if date_col in empty_options else 0
-    )
+    country_col = st.selectbox("Country column", [None] + cols, index=([None] + cols).index(country_col) if country_col in cols else 0)
+    account_col = st.selectbox("Account / retailer column", [None] + cols, index=([None] + cols).index(account_col) if account_col in cols else 0)
+    product_group_col = st.selectbox("Product group column", [None] + cols, index=([None] + cols).index(product_group_col) if product_group_col in cols else 0)
+    product_type_col = st.selectbox("Product type column", [None] + cols, index=([None] + cols).index(product_type_col) if product_type_col in cols else 0)
+    product_line_col = st.selectbox("Product line column", [None] + cols, index=([None] + cols).index(product_line_col) if product_line_col in cols else 0)
+    sku_col = st.selectbox("Product SKU column", [None] + cols, index=([None] + cols).index(sku_col) if sku_col in cols else 0)
+    product_desc_col = st.selectbox("Marketing product description column", [None] + cols, index=([None] + cols).index(product_desc_col) if product_desc_col in cols else 0)
+    fiscal_year_col = st.selectbox("Fiscal year column", [None] + cols, index=([None] + cols).index(fiscal_year_col) if fiscal_year_col in cols else 0)
+    fiscal_quarter_col = st.selectbox("Fiscal quarter column", [None] + cols, index=([None] + cols).index(fiscal_quarter_col) if fiscal_quarter_col in cols else 0)
+    fiscal_month_col = st.selectbox("Fiscal month column", [None] + cols, index=([None] + cols).index(fiscal_month_col) if fiscal_month_col in cols else 0)
+    sales_col = st.selectbox("Indirect sales out USD column", cols, index=cols.index(sales_col) if sales_col in cols else 0)
 
-    sales_col = st.selectbox(
-        "Sales / revenue column",
-        cols,
-        index=cols.index(sales_col) if sales_col in cols else 0
-    )
-
-    product_col = st.selectbox(
-        "Product column",
-        empty_options,
-        index=empty_options.index(product_col) if product_col in empty_options else 0
-    )
-
-    category_col = st.selectbox(
-        "Category column",
-        empty_options,
-        index=empty_options.index(category_col) if category_col in empty_options else 0
-    )
-
-    store_col = st.selectbox(
-        "Store / location column",
-        empty_options,
-        index=empty_options.index(store_col) if store_col in empty_options else 0
-    )
-
-    units_col = st.selectbox(
-        "Units column",
-        empty_options,
-        index=empty_options.index(units_col) if units_col in empty_options else 0
-    )
-
-    margin_col = st.selectbox(
-        "Margin % column",
-        empty_options,
-        index=empty_options.index(margin_col) if margin_col in empty_options else 0
-    )
-
-    try:
-        df[sales_col] = clean_currency(df[sales_col])
-    except Exception:
-        st.error("The selected sales column could not be converted into numbers. Please select another sales/revenue column.")
+    if not sku_col or not account_col or not fiscal_year_col or not fiscal_month_col:
+        st.warning("For best results, map Account, SKU, Fiscal Year and Fiscal Month.")
         st.stop()
 
+    df[sales_col] = clean_number(df[sales_col])
     df = df.dropna(subset=[sales_col])
 
-    if units_col:
-        df[units_col] = pd.to_numeric(df[units_col], errors="coerce")
-
-    if margin_col:
-        df[margin_col] = clean_currency(df[margin_col])
-
-    if date_col:
-        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-        df = df.dropna(subset=[date_col])
-
-    st.subheader("3. Executive dashboard")
-
-    total_sales = df[sales_col].sum()
-    avg_sales = df[sales_col].mean()
-    total_units = df[units_col].sum() if units_col else None
-    avg_margin = df[margin_col].mean() if margin_col else None
-
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-
-    kpi1.metric("Total sales", f"{total_sales:,.0f}")
-    kpi2.metric("Average sale", f"{avg_sales:,.0f}")
-    kpi3.metric("Units sold", f"{total_units:,.0f}" if units_col else "N/A")
-    kpi4.metric("Average margin", f"{avg_margin:.1f}%" if margin_col else "N/A")
-
-    if date_col:
-        sales_trend = df.groupby(date_col)[sales_col].sum().reset_index()
-
-        fig = px.line(
-            sales_trend,
-            x=date_col,
-            y=sales_col,
-            title="Sales trend over time"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if category_col:
-            category_sales = (
-                df.groupby(category_col)[sales_col]
-                .sum()
-                .sort_values(ascending=False)
-                .head(20)
-                .reset_index()
-            )
-
-            fig = px.bar(
-                category_sales,
-                x=sales_col,
-                y=category_col,
-                orientation="h",
-                title="Sales by category"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        if store_col:
-            store_sales = (
-                df.groupby(store_col)[sales_col]
-                .sum()
-                .sort_values(ascending=False)
-                .head(20)
-                .reset_index()
-            )
-
-            fig = px.bar(
-                store_sales,
-                x=sales_col,
-                y=store_col,
-                orientation="h",
-                title="Sales by store / customer"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-    if product_col:
-        st.subheader("4. Product performance")
-
-        product_sales = (
-            df.groupby(product_col)[sales_col]
-            .sum()
-            .sort_values(ascending=False)
-            .reset_index()
-        )
-
-        top_products = product_sales.head(10)
-        bottom_products = product_sales.tail(10)
-
-        p1, p2 = st.columns(2)
-
-        with p1:
-            fig = px.bar(
-                top_products,
-                x=sales_col,
-                y=product_col,
-                orientation="h",
-                title="Top 10 products"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        with p2:
-            fig = px.bar(
-                bottom_products,
-                x=sales_col,
-                y=product_col,
-                orientation="h",
-                title="Bottom 10 products"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-    if store_col and category_col:
-        st.subheader("5. Store and category benchmark")
-
-        benchmark = (
-            df.groupby([store_col, category_col])[sales_col]
-            .sum()
-            .reset_index()
-        )
-
-        fig = px.density_heatmap(
-            benchmark,
-            x=category_col,
-            y=store_col,
-            z=sales_col,
-            title="Store/category sales heatmap"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    if date_col and len(df[date_col].dropna().unique()) >= 5:
-        st.subheader("6. 30-day sales forecast")
-
-        actual, forecast = create_forecast(df, date_col, sales_col)
-
-        forecast_chart = pd.concat([
-            actual[[date_col, sales_col]].assign(Type="Actual"),
-            forecast[[date_col, sales_col]].assign(Type="Forecast")
-        ])
-
-        fig = px.line(
-            forecast_chart,
-            x=date_col,
-            y=sales_col,
-            color="Type",
-            title="Sales forecast"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Forecasting needs a valid date column with at least 5 different dates.")
-
-    st.subheader("7. Automated conclusions")
-
-    insights = generate_insights(
-        df,
-        date_col,
-        sales_col,
-        product_col,
-        category_col,
-        store_col,
-        units_col,
-        margin_col
+    df["_Period"] = (
+        df[fiscal_year_col].astype(str)
+        + " - "
+        + df[fiscal_month_col].astype(str)
     )
 
-    for insight in insights:
-        st.info(insight)
+    product_name_col = product_desc_col if product_desc_col else sku_col
+    category_col = product_line_col if product_line_col else product_type_col if product_type_col else product_group_col
 
-    st.subheader("8. Commercial recommendations")
+    # Create ordered period index
+    period_table = (
+        df[[fiscal_year_col, fiscal_month_col, "_Period"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
 
-    recommendations = []
+    period_table["_YearNum"] = pd.to_numeric(period_table[fiscal_year_col], errors="coerce")
+    period_table["_MonthNum"] = pd.to_numeric(period_table[fiscal_month_col], errors="coerce")
+    period_table = period_table.sort_values(["_YearNum", "_MonthNum"])
 
-    if category_col:
-        recommendations.append(
-            "Focus commercial activity on the strongest category and identify whether its success can be replicated across weaker categories."
+    ordered_periods = period_table["_Period"].tolist()
+
+    if len(ordered_periods) < 2:
+        st.warning("The file needs at least two fiscal months to calculate momentum and recommendations.")
+        st.stop()
+
+    latest_period = ordered_periods[-1]
+    previous_period = ordered_periods[-2]
+
+    latest_df = df[df["_Period"] == latest_period]
+    previous_df = df[df["_Period"] == previous_period]
+
+    # -----------------------------
+    # Product scoring engine
+    # -----------------------------
+
+    product_latest = (
+        latest_df.groupby([sku_col, product_name_col], dropna=False)[sales_col]
+        .sum()
+        .reset_index()
+        .rename(columns={sales_col: "Latest Sales"})
+    )
+
+    product_previous = (
+        previous_df.groupby([sku_col], dropna=False)[sales_col]
+        .sum()
+        .reset_index()
+        .rename(columns={sales_col: "Previous Sales"})
+    )
+
+    product_accounts = (
+        latest_df.groupby(sku_col)[account_col]
+        .nunique()
+        .reset_index()
+        .rename(columns={account_col: "Account Coverage"})
+    )
+
+    product_scores = product_latest.merge(product_previous, on=sku_col, how="left")
+    product_scores = product_scores.merge(product_accounts, on=sku_col, how="left")
+    product_scores["Previous Sales"] = product_scores["Previous Sales"].fillna(0)
+    product_scores["Growth %"] = product_scores.apply(
+        lambda x: safe_growth(x["Latest Sales"], x["Previous Sales"]),
+        axis=1
+    ).fillna(0)
+
+    product_scores["Revenue Score"] = normalise_score(product_scores["Latest Sales"])
+    product_scores["Growth Score"] = normalise_score(product_scores["Growth %"])
+    product_scores["Coverage Score"] = normalise_score(product_scores["Account Coverage"])
+
+    product_scores["Product Score"] = (
+        product_scores["Revenue Score"] * 0.4
+        + product_scores["Growth Score"] * 0.4
+        + product_scores["Coverage Score"] * 0.2
+    )
+
+    product_scores["Status"] = product_scores.apply(
+        lambda x: product_status(x["Product Score"], x["Growth %"]),
+        axis=1
+    )
+
+    product_scores = product_scores.sort_values("Product Score", ascending=False)
+
+    # -----------------------------
+    # Account scorecards
+    # -----------------------------
+
+    account_latest = (
+        latest_df.groupby(account_col)[sales_col]
+        .sum()
+        .reset_index()
+        .rename(columns={sales_col: "Latest Sales"})
+    )
+
+    account_previous = (
+        previous_df.groupby(account_col)[sales_col]
+        .sum()
+        .reset_index()
+        .rename(columns={sales_col: "Previous Sales"})
+    )
+
+    account_skus = (
+        latest_df.groupby(account_col)[sku_col]
+        .nunique()
+        .reset_index()
+        .rename(columns={sku_col: "SKU Count"})
+    )
+
+    account_scorecards = account_latest.merge(account_previous, on=account_col, how="left")
+    account_scorecards = account_scorecards.merge(account_skus, on=account_col, how="left")
+    account_scorecards["Previous Sales"] = account_scorecards["Previous Sales"].fillna(0)
+    account_scorecards["Growth %"] = account_scorecards.apply(
+        lambda x: safe_growth(x["Latest Sales"], x["Previous Sales"]),
+        axis=1
+    ).fillna(0)
+
+    account_scorecards["Revenue Score"] = normalise_score(account_scorecards["Latest Sales"])
+    account_scorecards["Growth Score"] = normalise_score(account_scorecards["Growth %"])
+    account_scorecards["Breadth Score"] = normalise_score(account_scorecards["SKU Count"])
+
+    account_scorecards["Account Health Score"] = (
+        account_scorecards["Revenue Score"] * 0.4
+        + account_scorecards["Growth Score"] * 0.4
+        + account_scorecards["Breadth Score"] * 0.2
+    )
+
+    account_scorecards = account_scorecards.sort_values("Account Health Score", ascending=False)
+
+    # -----------------------------
+    # Opportunity engine
+    # -----------------------------
+
+    account_product_latest = (
+        latest_df.groupby([account_col, sku_col, product_name_col], dropna=False)[sales_col]
+        .sum()
+        .reset_index()
+        .rename(columns={sales_col: "Account Product Sales"})
+    )
+
+    product_average = (
+        account_product_latest.groupby(sku_col)["Account Product Sales"]
+        .mean()
+        .reset_index()
+        .rename(columns={"Account Product Sales": "Average Account Sales"})
+    )
+
+    opportunities = account_product_latest.merge(product_average, on=sku_col, how="left")
+    opportunities = opportunities.merge(
+        product_scores[[sku_col, "Product Score", "Growth %", "Status"]],
+        on=sku_col,
+        how="left"
+    )
+
+    opportunities["Gap To Average"] = opportunities["Average Account Sales"] - opportunities["Account Product Sales"]
+    opportunities["Gap To Average"] = opportunities["Gap To Average"].clip(lower=0)
+
+    opportunities["Opportunity Score"] = (
+        normalise_score(opportunities["Gap To Average"]) * 0.45
+        + opportunities["Product Score"].fillna(0) * 0.35
+        + normalise_score(opportunities["Growth %"].fillna(0)) * 0.20
+    )
+
+    opportunities["Priority"] = opportunities["Opportunity Score"].apply(action_priority)
+
+    opportunities["Recommended Action"] = opportunities.apply(
+        lambda x: (
+            f"Increase promotional support for {x[product_name_col]} in {x[account_col]}. "
+            f"This product under-indexes versus the account average and has a product score of {x['Product Score']:.0f}."
+        ),
+        axis=1
+    )
+
+    opportunities = opportunities.sort_values("Opportunity Score", ascending=False)
+
+    # -----------------------------
+    # Tabs
+    # -----------------------------
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Commercial Action Centre",
+        "Product Scoring Engine",
+        "Opportunity Engine",
+        "Account Scorecards"
+    ])
+
+    with tab1:
+        st.subheader("🔥 Commercial Action Centre")
+        st.caption(f"Latest period: {latest_period} | Previous period: {previous_period}")
+
+        total_sales = latest_df[sales_col].sum()
+        previous_sales = previous_df[sales_col].sum()
+        total_growth = safe_growth(total_sales, previous_sales)
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Latest sales", f"${total_sales:,.0f}")
+        k2.metric("Previous sales", f"${previous_sales:,.0f}")
+        k3.metric("Growth", f"{total_growth:.1f}%" if not pd.isna(total_growth) else "N/A")
+        k4.metric("Active SKUs", f"{latest_df[sku_col].nunique():,}")
+
+        st.markdown("### Top 10 recommended commercial actions")
+
+        action_cols = [
+            "Priority",
+            account_col,
+            sku_col,
+            product_name_col,
+            "Account Product Sales",
+            "Average Account Sales",
+            "Gap To Average",
+            "Opportunity Score",
+            "Recommended Action"
+        ]
+
+        st.dataframe(
+            opportunities[action_cols].head(10),
+            use_container_width=True,
+            hide_index=True
         )
 
-    if store_col:
-        recommendations.append(
-            "Review the lowest-performing store or customer for execution gaps, stock availability, training quality and promotional compliance."
+        st.markdown("### Executive summary")
+
+        top_account = account_scorecards.iloc[0][account_col]
+        top_product = product_scores.iloc[0][product_name_col]
+        top_opp = opportunities.iloc[0]
+
+        st.info(
+            f"""
+            Latest sell-out was **${total_sales:,.0f}**, with growth of **{total_growth:.1f}%** versus the previous period.
+
+            The strongest account is **{top_account}**.
+
+            The highest scoring product is **{top_product}**.
+
+            The top commercial action is to increase support for **{top_opp[product_name_col]}** in **{top_opp[account_col]}**, 
+            with an estimated gap to average of **${top_opp['Gap To Average']:,.0f}**.
+            """
         )
 
-    if product_col:
-        recommendations.append(
-            "Use the top 10 products as hero lines in future promotional planning and attach-rate campaigns."
+    with tab2:
+        st.subheader("Product Scoring Engine")
+
+        st.dataframe(
+            product_scores[
+                [
+                    sku_col,
+                    product_name_col,
+                    "Latest Sales",
+                    "Previous Sales",
+                    "Growth %",
+                    "Account Coverage",
+                    "Product Score",
+                    "Status"
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True
         )
 
-    if margin_col:
-        recommendations.append(
-            "Compare high-sales products against margin contribution to avoid over-prioritising low-profit volume."
+        fig = px.bar(
+            product_scores.head(20),
+            x="Product Score",
+            y=product_name_col,
+            orientation="h",
+            title="Top 20 products by product score"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with tab3:
+        st.subheader("Opportunity Scoring Engine")
+
+        st.dataframe(
+            opportunities[
+                [
+                    "Priority",
+                    account_col,
+                    sku_col,
+                    product_name_col,
+                    "Account Product Sales",
+                    "Average Account Sales",
+                    "Gap To Average",
+                    "Product Score",
+                    "Opportunity Score",
+                    "Recommended Action"
+                ]
+            ].head(100),
+            use_container_width=True,
+            hide_index=True
         )
 
-    if date_col:
-        recommendations.append(
-            "Use the sales forecast to plan stock, staffing and promotional intensity for the next 30 days."
+        fig = px.bar(
+            opportunities.head(20),
+            x="Opportunity Score",
+            y=product_name_col,
+            color=account_col,
+            orientation="h",
+            title="Top 20 product/account promotion opportunities"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with tab4:
+        st.subheader("Account Scorecards")
+
+        st.dataframe(
+            account_scorecards[
+                [
+                    account_col,
+                    "Latest Sales",
+                    "Previous Sales",
+                    "Growth %",
+                    "SKU Count",
+                    "Account Health Score"
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True
         )
 
-    for rec in recommendations:
-        st.success(rec)
+        fig = px.bar(
+            account_scorecards.head(20),
+            x="Account Health Score",
+            y=account_col,
+            orientation="h",
+            title="Account health score"
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("9. Download analysed data")
+        if category_col:
+            st.markdown("### Account/category benchmark")
 
-    csv = df.to_csv(index=False).encode("utf-8")
+            benchmark = (
+                latest_df.groupby([account_col, category_col])[sales_col]
+                .sum()
+                .reset_index()
+            )
+
+            fig = px.density_heatmap(
+                benchmark,
+                x=category_col,
+                y=account_col,
+                z=sales_col,
+                title="Account/category sales heatmap"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Download outputs")
+
+    output = opportunities.to_csv(index=False).encode("utf-8")
 
     st.download_button(
-        label="Download cleaned sales data",
-        data=csv,
-        file_name="cleaned_retail_sales_data.csv",
+        label="Download commercial action centre CSV",
+        data=output,
+        file_name="commercial_action_centre.csv",
         mime="text/csv"
     )
 
 else:
-    st.warning("Upload a CSV or Excel file to begin.")
+    st.warning("Upload your vendor sell-out CSV or Excel file to begin.")
