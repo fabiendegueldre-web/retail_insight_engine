@@ -24,27 +24,40 @@ def load_file(file):
         return pd.read_excel(file)
 
     encodings = ["utf-8", "utf-8-sig", "latin1", "ISO-8859-1", "cp1252", "utf-16"]
+    separators = [",", ";", "\t", "|"]
+
+    best_df = None
+    best_score = -1
 
     for encoding in encodings:
-        try:
-            file.seek(0)
-            return pd.read_csv(
-                file,
-                encoding=encoding,
-                low_memory=False
-            )
-        except UnicodeDecodeError:
-            continue
-        except Exception:
-            continue
+        for sep in separators:
+            try:
+                file.seek(0)
 
-    file.seek(0)
-    return pd.read_csv(
-        file,
-        encoding="latin1",
-        low_memory=False,
-        on_bad_lines="skip"
-    )
+                temp_df = pd.read_csv(
+                    file,
+                    encoding=encoding,
+                    sep=sep,
+                    low_memory=False,
+                    on_bad_lines="skip"
+                )
+
+                temp_df = temp_df.dropna(how="all")
+                temp_df = temp_df.dropna(axis=1, how="all")
+
+                score = temp_df.shape[0] * temp_df.shape[1]
+
+                if score > best_score:
+                    best_score = score
+                    best_df = temp_df
+
+            except Exception:
+                continue
+
+    if best_df is None or best_df.empty:
+        raise ValueError("Could not read the uploaded file. Please check the file format.")
+
+    return best_df
 
 
 def detect_column(df, keywords):
@@ -140,8 +153,11 @@ def create_forecast(df, date_col, sales_col):
 if uploaded_file:
     try:
         df = load_file(uploaded_file)
+        df.columns = df.columns.astype(str).str.strip()
+        df = df.dropna(how="all")
+        df = df.dropna(axis=1, how="all")
     except Exception as e:
-        st.error("The file could not be loaded. Try saving it as a standard CSV UTF-8 file or Excel file.")
+        st.error("The file could not be loaded properly.")
         st.exception(e)
         st.stop()
 
@@ -160,13 +176,12 @@ if uploaded_file:
     st.subheader("2. Column mapping")
 
     cols = list(df.columns)
-
-    date_options = [None] + cols
+    empty_options = [None] + cols
 
     date_col = st.selectbox(
         "Date column",
-        date_options,
-        index=date_options.index(date_col) if date_col in date_options else 0
+        empty_options,
+        index=empty_options.index(date_col) if date_col in empty_options else 0
     )
 
     sales_col = st.selectbox(
@@ -177,32 +192,32 @@ if uploaded_file:
 
     product_col = st.selectbox(
         "Product column",
-        date_options,
-        index=date_options.index(product_col) if product_col in date_options else 0
+        empty_options,
+        index=empty_options.index(product_col) if product_col in empty_options else 0
     )
 
     category_col = st.selectbox(
         "Category column",
-        date_options,
-        index=date_options.index(category_col) if category_col in date_options else 0
+        empty_options,
+        index=empty_options.index(category_col) if category_col in empty_options else 0
     )
 
     store_col = st.selectbox(
         "Store / location column",
-        date_options,
-        index=date_options.index(store_col) if store_col in date_options else 0
+        empty_options,
+        index=empty_options.index(store_col) if store_col in empty_options else 0
     )
 
     units_col = st.selectbox(
         "Units column",
-        date_options,
-        index=date_options.index(units_col) if units_col in date_options else 0
+        empty_options,
+        index=empty_options.index(units_col) if units_col in empty_options else 0
     )
 
     margin_col = st.selectbox(
         "Margin % column",
-        date_options,
-        index=date_options.index(margin_col) if margin_col in date_options else 0
+        empty_options,
+        index=empty_options.index(margin_col) if margin_col in empty_options else 0
     )
 
     try:
